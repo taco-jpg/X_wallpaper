@@ -8,7 +8,7 @@ import SwiftUI
 import AVFoundation
 import AppKit
 import UniformTypeIdentifiers
-import ApplicationServices   // ⬅️ 新增：AX 辅助功能 API
+import ApplicationServices
 
 // MARK: - Player Hosting View
 final class PlayerHostingView: NSView {
@@ -36,6 +36,7 @@ struct PlayerContainer: NSViewRepresentable {
 }
 
 // MARK: - Controller
+@MainActor
 final class WallpaperController: NSObject, ObservableObject {
     // 持久化设置
     @AppStorage("defaultMuted") var defaultMuted: Bool = true
@@ -60,6 +61,7 @@ final class WallpaperController: NSObject, ObservableObject {
     private var player: AVQueuePlayer?
     private var wallpaperWindow: NSWindow?
     private var monitorTimer: Timer?
+    private var itemDidEndObserver: NSObjectProtocol?
     
     override init() {
         super.init()
@@ -67,25 +69,24 @@ final class WallpaperController: NSObject, ObservableObject {
                                                           name: NSWorkspace.activeSpaceDidChangeNotification, object: nil)
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(activeAppChanged),
                                                           name: NSWorkspace.didActivateApplicationNotification, object: nil)
-        if autoPauseOnFullscreen { ensureAXPermission() }   // ⬅️ 新增
+        if autoPauseOnFullscreen {
+            ensureAXPermission()
+        }
 
         if launchWithApp { createWallpaperWindowIfNeeded() }
         ensureWindowOnDesktop()
         startMonitor()
-        
-        // 自动恢复上次壁纸
-        if !lastVideoPath.isEmpty {
-            let url = URL(fileURLWithPath: lastVideoPath)
-            if FileManager.default.fileExists(atPath: url.path) {
-                Task { await load(url: url) }
-            }
-        }
-        
-        // 开机自启配置（路径变化后刷新）
-        updateLaunchAgent(launchAtLogin)
+        restoreLastVideoIfAvailable()
+
+        updateLaunchAgent(launchAtLogin, shouldOpenSettings: false)
     }
-    // === AX Fullscreen Support BEGIN ===
-    // 需要在文件顶部: import ApplicationServices
+
+    private func restoreLastVideoIfAvailable() {
+        guard !lastVideoPath.isEmpty else { return }
+        let url = URL(fileURLWithPath: lastVideoPath)
+        guard FileManager.default.fileExists(atPath: url.path) else { return }
+        Task { await load(url: url) }
+    }
 
     private func ensureAXPermission() {
         let key = kAXTrustedCheckOptionPrompt.takeRetainedValue() as String
@@ -132,9 +133,14 @@ final class WallpaperController: NSObject, ObservableObject {
         }
         return false
     }
-    // === AX Fullscreen Support END ===
 
-    deinit { stopMonitor(); NotificationCenter.default.removeObserver(self) }
+    deinit {
+        stopMonitor()
+        NotificationCenter.default.removeObserver(self)
+        if let itemDidEndObserver {
+            NotificationCenter.default.removeObserver(itemDidEndObserver)
+        }
+    }
     
     // MARK: 导入视频
     func importVideo() {
@@ -150,13 +156,16 @@ final class WallpaperController: NSObject, ObservableObject {
     @MainActor
     func load(url: URL) async {
         status = "加载中…"
-        currentFilename = url.lastPathComponent
         createWallpaperWindowIfNeeded()
         
         let asset = AVURLAsset(url: url)
-        _ = try? await asset.load(.isPlayable)
-        
-        // 新 API 获取时长，拿不到时从 video track 的 timeRange 兜底
+        guard (try? await asset.load(.isPlayable)) == true else {
+            status = "无法播放该视频"
+            return
+        }
+
+        currentFilename = url.lastPathComponent
+
         let loadedDuration = try? await asset.load(.duration)
         var duration: CMTime = loadedDuration ?? .zero
         if CMTimeCompare(duration, .zero) <= 0 {
@@ -174,23 +183,39 @@ final class WallpaperController: NSObject, ObservableObject {
             playAsset = bounced
         }
         
-        let item = AVPlayerItem(asset: playAsset)
-        let q = AVQueuePlayer(playerItem: item)
-        q.isMuted = defaultMuted
-        q.actionAtItemEnd = .none
-        NotificationCenter.default.addObserver(self, selector: #selector(itemEnded(_:)),
-                                               name: .AVPlayerItemDidPlayToEndTime, object: item)
-        
-        self.player = q
+        configurePlayer(with: playAsset)
         attachPlayerToWindow()
         ensureWindowOnDesktop()
         self.isReady = true
         reasonPaused = false
+        userPaused = false
         play()
         status = "就绪：\(currentFilename ?? "视频")"
-        
-        // 保存路径
         self.lastVideoPath = url.path
+    }
+
+    private func configurePlayer(with asset: AVAsset) {
+        if let itemDidEndObserver {
+            NotificationCenter.default.removeObserver(itemDidEndObserver)
+            self.itemDidEndObserver = nil
+        }
+
+        player?.pause()
+        player = nil
+
+        let item = AVPlayerItem(asset: asset)
+        let queuePlayer = AVQueuePlayer(playerItem: item)
+        queuePlayer.isMuted = defaultMuted
+        queuePlayer.actionAtItemEnd = .none
+        itemDidEndObserver = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemDidPlayToEndTime,
+            object: item,
+            queue: .main
+        ) { [weak self] _ in
+            self?.itemEnded()
+        }
+
+        player = queuePlayer
     }
     
     private func attachPlayerToWindow() {
@@ -203,19 +228,30 @@ final class WallpaperController: NSObject, ObservableObject {
     
     // MARK: Bounce asset（正放 + 正放，视觉往返）
     private func makeBounceAsset(from asset: AVAsset, duration: CMTime) async -> AVAsset? {
-        guard let videoTrack = try? await asset.load(.tracks)
-            .first(where: { $0.mediaType == .video }) else { return nil }
+        guard let tracks = try? await asset.load(.tracks),
+              let videoTrack = tracks.first(where: { $0.mediaType == .video }) else { return nil }
         let comp = AVMutableComposition()
         guard let v = comp.addMutableTrack(withMediaType: .video,
                                            preferredTrackID: kCMPersistentTrackID_Invalid) else { return nil }
         let tr = CMTimeRange(start: .zero, duration: duration)
         try? v.insertTimeRange(tr, of: videoTrack, at: .zero)
         try? v.insertTimeRange(tr, of: videoTrack, at: duration)
+
+        if let audioTrack = tracks.first(where: { $0.mediaType == .audio }),
+           let audio = comp.addMutableTrack(withMediaType: .audio,
+                                            preferredTrackID: kCMPersistentTrackID_Invalid) {
+            try? audio.insertTimeRange(tr, of: audioTrack, at: .zero)
+            try? audio.insertTimeRange(tr, of: audioTrack, at: duration)
+        }
+
         return comp
     }
     
     // MARK: 控制（含手动/规则暂停区分）
-    func setMuted(_ muted: Bool) { player?.isMuted = muted }
+    func setMuted(_ muted: Bool) {
+        defaultMuted = muted
+        player?.isMuted = muted
+    }
     
     func togglePlay() {
         if isPlaying {
@@ -223,15 +259,19 @@ final class WallpaperController: NSObject, ObservableObject {
             pause()
         } else {
             userPaused = false
-            play()
+            if reasonPaused {
+                status = "等待全屏或后台条件解除后继续播放"
+            } else {
+                play()
+            }
         }
     }
     
     func play() {
-        guard !reasonPaused, !userPaused else { return }
+        guard !reasonPaused, !userPaused, let player else { return }
         createWallpaperWindowIfNeeded()
         ensureWindowOnDesktop()
-        player?.play()
+        player.play()
         isPlaying = true
         status = "播放中"
     }
@@ -239,21 +279,29 @@ final class WallpaperController: NSObject, ObservableObject {
     func pause() {
         player?.pause()
         isPlaying = false
-        status = "已暂停"
+        if isReady {
+            status = "已暂停"
+        }
     }
     
     func stopAndTearDown() {
         pause()
+        reasonPaused = false
+        userPaused = false
+        isReady = false
+        currentFilename = nil
+        if let itemDidEndObserver {
+            NotificationCenter.default.removeObserver(itemDidEndObserver)
+            self.itemDidEndObserver = nil
+        }
         player?.replaceCurrentItem(with: nil)
         player = nil
         wallpaperWindow?.orderOut(nil)
         wallpaperWindow = nil
         status = "已移除"
-        isReady = false
-        currentFilename = nil
     }
     
-    @objc private func itemEnded(_ n: Notification) {
+    private func itemEnded() {
         player?.seek(to: .zero)
         if !reasonPaused && !userPaused {
             player?.play()
@@ -265,7 +313,7 @@ final class WallpaperController: NSObject, ObservableObject {
     // MARK: 壁纸窗口 & 保位
     private func createWallpaperWindowIfNeeded() {
         guard wallpaperWindow == nil else { return }
-        let frame = NSScreen.screens.first?.frame ?? NSRect(x: 0, y: 0, width: 1280, height: 800)
+        let frame = NSScreen.main?.frame ?? NSScreen.screens.first?.frame ?? NSRect(x: 0, y: 0, width: 1280, height: 800)
         let win = NSWindow(contentRect: frame, styleMask: [.borderless], backing: .buffered, defer: false)
         
         var behavior: NSWindow.CollectionBehavior = [.stationary, .ignoresCycle]
@@ -326,9 +374,9 @@ final class WallpaperController: NSObject, ObservableObject {
         reasonPaused = shouldPause
         
         if reasonPaused {
-            if isPlaying { pause() }      // 外部原因 → 必暂停
-        } else {
-            if isReady && !isPlaying && !userPaused { play() } // 无外因且用户未手动暂停 → 恢复
+            if isPlaying { pause() }
+        } else if isReady && !isPlaying && !userPaused {
+            play()
         }
         
         (NSApp.delegate as? AppDelegate)?.status?.rebuildMenu()
@@ -343,23 +391,19 @@ final class WallpaperController: NSObject, ObservableObject {
     
     // MARK: - 开机自启 (兼容沙盒 & 非沙盒)
     func isSandboxed() -> Bool {
-        // 判断是否处于 App Store / TestFlight 沙盒
         ProcessInfo.processInfo.environment["APP_SANDBOX_CONTAINER_ID"] != nil
     }
     
-    func updateLaunchAgent(_ enabled: Bool) {
+    func updateLaunchAgent(_ enabled: Bool, shouldOpenSettings: Bool = true) {
         if isSandboxed() {
-            // ✅ 沙盒环境禁止 launchctl，避免崩溃
             status = "App Store 版本不支持内置开机自启，请到 系统设置 → 通用 → 登录项 手动添加。"
-            
-            // 可选：帮用户直接跳转到“登录项”设置 (macOS Ventura+)
-            if let url = URL(string: "x-apple.systempreferences:com.apple.LoginItems-Settings.extension") {
+            if shouldOpenSettings,
+               let url = URL(string: "x-apple.systempreferences:com.apple.LoginItems-Settings.extension") {
                 NSWorkspace.shared.open(url)
             }
             return
         }
         
-        // ✅ 开发版 (非沙盒) 使用 LaunchAgent
         let fm = FileManager.default
         let bundleID = Bundle.main.bundleIdentifier ?? "XWallpaper"
         let execPath = Bundle.main.bundlePath + "/Contents/MacOS/" + (Bundle.main.infoDictionary?["CFBundleExecutable"] as? String ?? "XWallpaper")
@@ -388,7 +432,6 @@ final class WallpaperController: NSObject, ObservableObject {
         }
     }
     
-    /// 执行 launchctl 命令 (仅非沙盒可用)
     @discardableResult
     private func runLaunchctl(_ args: [String]) -> Int32 {
         let task = Process()
