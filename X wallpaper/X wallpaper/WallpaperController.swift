@@ -47,10 +47,11 @@ final class WallpaperController: NSObject, ObservableObject {
     @AppStorage("joinAllSpaces") var joinAllSpaces: Bool = true
     @AppStorage("monitorInterval") var monitorInterval: Double = 1.0
     @AppStorage("launchAtLogin") var launchAtLogin: Bool = false
+    @AppStorage("language") var language: Language = .chinese
     @AppStorage("lastVideoPath") private var lastVideoPath: String = ""   // 记住上次壁纸
     
     // 状态（只保留这一份）
-    @Published var status: String = "等待导入"
+    @Published var status: String = Localization.string(.waitingImport, for: .chinese)
     @Published var isPlaying: Bool = false
     @Published var isReady: Bool = false
     @Published var currentFilename: String? = nil
@@ -155,12 +156,12 @@ final class WallpaperController: NSObject, ObservableObject {
     
     @MainActor
     func load(url: URL) async {
-        status = "加载中…"
+        status = Localization.string(.loading, for: language)
         createWallpaperWindowIfNeeded()
         
         let asset = AVURLAsset(url: url)
         guard (try? await asset.load(.isPlayable)) == true else {
-            status = "无法播放该视频"
+            status = Localization.string(.playableError, for: language)
             return
         }
 
@@ -190,7 +191,7 @@ final class WallpaperController: NSObject, ObservableObject {
         reasonPaused = false
         userPaused = false
         play()
-        status = "就绪：\(currentFilename ?? "视频")"
+        status = Localization.string(.ready, for: language) + "：\(currentFilename ?? "")"
         self.lastVideoPath = url.path
     }
 
@@ -260,7 +261,7 @@ final class WallpaperController: NSObject, ObservableObject {
         } else {
             userPaused = false
             if reasonPaused {
-                status = "等待全屏或后台条件解除后继续播放"
+                status = Localization.string(.waitingCondition, for: language)
             } else {
                 play()
             }
@@ -273,14 +274,14 @@ final class WallpaperController: NSObject, ObservableObject {
         ensureWindowOnDesktop()
         player.play()
         isPlaying = true
-        status = "播放中"
+        status = Localization.string(.playing, for: language)
     }
     
     func pause() {
         player?.pause()
         isPlaying = false
         if isReady {
-            status = "已暂停"
+            status = Localization.string(.paused, for: language)
         }
     }
     
@@ -298,7 +299,7 @@ final class WallpaperController: NSObject, ObservableObject {
         player = nil
         wallpaperWindow?.orderOut(nil)
         wallpaperWindow = nil
-        status = "已移除"
+        status = Localization.string(.removed, for: language)
     }
     
     private func itemEnded() {
@@ -306,7 +307,7 @@ final class WallpaperController: NSObject, ObservableObject {
         if !reasonPaused && !userPaused {
             player?.play()
             isPlaying = true
-            status = "播放中"
+            status = Localization.string(.playing, for: language)
         }
     }
     
@@ -396,7 +397,7 @@ final class WallpaperController: NSObject, ObservableObject {
     
     func updateLaunchAgent(_ enabled: Bool, shouldOpenSettings: Bool = true) {
         if isSandboxed() {
-            status = "App Store 版本不支持内置开机自启，请到 系统设置 → 通用 → 登录项 手动添加。"
+            status = Localization.string(.appStoreNotice, for: language)
             if shouldOpenSettings,
                let url = URL(string: "x-apple.systempreferences:com.apple.LoginItems-Settings.extension") {
                 NSWorkspace.shared.open(url)
@@ -424,7 +425,7 @@ final class WallpaperController: NSObject, ObservableObject {
                 _ = runLaunchctl(["bootstrap", "gui/\(getuid())", plistPath])
                 _ = runLaunchctl(["enable", "gui/\(getuid())/\(bundleID)"])
             } catch {
-                status = "设置开机自启失败：\(error.localizedDescription)"
+                status = Localization.string(.launchAgentError, for: language) + "：\(error.localizedDescription)"
             }
         } else {
             _ = runLaunchctl(["bootout", "gui/\(getuid())", plistPath])

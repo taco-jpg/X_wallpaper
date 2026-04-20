@@ -22,24 +22,27 @@ final class StatusBarController {
     }
 
     func rebuildMenu() {
+        guard let language = controller?.language else { return }
         let menu = NSMenu()
-        menu.addItem(withTitle: "显示控制面板", action: #selector(showPanel), keyEquivalent: "")
+        menu.addItem(withTitle: Localization.string(.showControlPanel, for: language), action: #selector(showPanel), keyEquivalent: "")
         menu.addItem(NSMenuItem.separator())
-        menu.addItem(withTitle: controller?.isPlaying == true ? "暂停" : "播放",
+        menu.addItem(withTitle: controller?.isPlaying == true ? Localization.string(.pause, for: language) : Localization.string(.play, for: language),
                      action: #selector(togglePlay), keyEquivalent: "")
-        menu.addItem(withTitle: "导入 MP4…", action: #selector(importVideo), keyEquivalent: "")
-        let mute = NSMenuItem(title: (controller?.defaultMuted == true ? "取消静音" : "静音"),
+        menu.addItem(withTitle: Localization.string(.importVideo, for: language), action: #selector(importVideo), keyEquivalent: "")
+        let muteTitle = controller?.defaultMuted == true ? Localization.string(.unmute, for: language) : Localization.string(.mute, for: language)
+        let mute = NSMenuItem(title: muteTitle,
                               action: #selector(toggleMute), keyEquivalent: "")
         menu.addItem(mute)
         menu.addItem(NSMenuItem.separator())
-        menu.addItem(withTitle: "退出", action: #selector(quit), keyEquivalent: "q")
+        menu.addItem(withTitle: Localization.string(.quit, for: language), action: #selector(quit), keyEquivalent: "q")
         menu.items.forEach { $0.target = self }
         statusItem.menu = menu
     }
 
     @objc private func showPanel() {
         NSApp.activate(ignoringOtherApps: true)
-        if let win = NSApp.windows.first(where: { $0.title == "控制面板" }) {
+        let title = Localization.string(.controlPanel, for: controller?.language ?? .chinese)
+        if let win = NSApp.windows.first(where: { $0.title == title }) {
             win.makeKeyAndOrderFront(nil)
         } else {
             NSApp.windows.first?.makeKeyAndOrderFront(nil)
@@ -73,7 +76,7 @@ struct VideoWallpaperApp: App {
     
 
     var body: some Scene {
-        WindowGroup("控制面板") {
+        WindowGroup(Localization.string(.controlPanel, for: controller.language)) {
             ContentView()
                 .environmentObject(controller)
                 .frame(minWidth: 460, minHeight: 320)

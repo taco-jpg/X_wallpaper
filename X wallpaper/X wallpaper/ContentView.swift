@@ -33,13 +33,16 @@ struct ContentView: View {
             wc.setMuted(newValue)
             refreshStatusBar()
         }
+        .onChange(of: wc.language) { _, _ in
+            refreshStatusBar()
+        }
     }
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Video Wallpaper")
+            Text(Localization.string(.videoWallpaper, for: wc.language))
                 .font(.system(size: 30, weight: .bold, design: .rounded))
-            Text("把本地视频钉到桌面背景层，支持自动循环、自动暂停和开机自启。")
+            Text(Localization.string(.appDescription, for: wc.language))
                 .foregroundStyle(.secondary)
         }
     }
@@ -47,10 +50,10 @@ struct ContentView: View {
     private var controlsCard: some View {
         card {
             HStack(spacing: 12) {
-                Button("导入 MP4…") { wc.importVideo() }
-                Button(wc.isPlaying ? "暂停" : "播放") { wc.togglePlay() }
+                Button(Localization.string(.importVideo, for: wc.language)) { wc.importVideo() }
+                Button(wc.isPlaying ? Localization.string(.pause, for: wc.language) : Localization.string(.play, for: wc.language)) { wc.togglePlay() }
                     .disabled(!wc.isReady)
-                Button("移除壁纸") { wc.stopAndTearDown() }
+                Button(Localization.string(.removeWallpaper, for: wc.language)) { wc.stopAndTearDown() }
             }
         }
     }
@@ -58,10 +61,10 @@ struct ContentView: View {
     private var settingsCard: some View {
         card {
             VStack(alignment: .leading, spacing: 12) {
-                Toggle("默认静音", isOn: $wc.defaultMuted)
-                Toggle("播完自动倒放再播（流畅循环）", isOn: $wc.enableBounce)
-                Toggle("全屏/最大化时自动暂停", isOn: $wc.autoPauseOnFullscreen)
-                Toggle("切到前台应用时自动暂停（后台停播）", isOn: $wc.autoPauseInBackground)
+                Toggle(Localization.string(.defaultMuted, for: wc.language), isOn: $wc.defaultMuted)
+                Toggle(Localization.string(.enableBounce, for: wc.language), isOn: $wc.enableBounce)
+                Toggle(Localization.string(.autoPauseFullscreen, for: wc.language), isOn: $wc.autoPauseOnFullscreen)
+                Toggle(Localization.string(.autoPauseBackground, for: wc.language), isOn: $wc.autoPauseInBackground)
             }
         }
     }
@@ -69,17 +72,21 @@ struct ContentView: View {
     private var statusCard: some View {
         card {
             VStack(alignment: .leading, spacing: 10) {
-                infoRow("状态", wc.status)
-                infoRow("当前视频", wc.currentFilename ?? "—")
+                infoRow(Localization.string(.status, for: wc.language), wc.status)
+                infoRow(Localization.string(.currentVideo, for: wc.language), wc.currentFilename ?? "—")
             }
         }
     }
 
     private var hintText: some View {
-        Text("若未见到壁纸，可先关闭两个自动暂停选项测试；若仍无画面，请在 系统设置 → 隐私与安全性 → 屏幕录制 中勾选本 App。")
-            .foregroundStyle(.secondary)
-            .font(.footnote)
-            .fixedSize(horizontal: false, vertical: true)
+        VStack(alignment: .leading, spacing: 4) {
+            Text(Localization.string(.hintTitle, for: wc.language))
+                .fontWeight(.bold)
+            Text(Localization.string(.hintDescription, for: wc.language))
+        }
+        .foregroundStyle(.secondary)
+        .font(.footnote)
+        .fixedSize(horizontal: false, vertical: true)
     }
 
     @ViewBuilder
@@ -114,26 +121,33 @@ struct SettingsView: View {
     @EnvironmentObject var wc: WallpaperController
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("偏好设置")
+            Text(Localization.string(.preferenceHeader, for: wc.language))
                 .font(.headline)
 
             Form {
-                Toggle("开机自启", isOn: Binding(
+                Picker(Localization.string(.language, for: wc.language), selection: $wc.language) {
+                    ForEach(Language.allCases) { lang in
+                        Text(lang.displayName).tag(lang)
+                    }
+                }
+                .pickerStyle(.menu)
+
+                Toggle(Localization.string(.launchAtLogin, for: wc.language), isOn: Binding(
                     get: { wc.launchAtLogin },
                     set: { v in
                         wc.launchAtLogin = v
                         wc.updateLaunchAgent(v)
                     }
                 ))
-                Toggle("启动后自动创建壁纸窗口", isOn: $wc.launchWithApp)
-                Toggle("覆盖所有桌面空间（所有桌面都显示）", isOn: $wc.joinAllSpaces)
+                Toggle(Localization.string(.launchWithApp, for: wc.language), isOn: $wc.launchWithApp)
+                Toggle(Localization.string(.joinAllSpaces, for: wc.language), isOn: $wc.joinAllSpaces)
                 Stepper(value: $wc.monitorInterval, in: 0.5...5, step: 0.5) {
-                    Text("监控/保位间隔：\(String(format: "%.1f", wc.monitorInterval))s")
+                    Text("\(Localization.string(.monitorInterval, for: wc.language))：\(String(format: "%.1f", wc.monitorInterval))s")
                 }
             }
             .padding(.top, 4)
 
-            Text("开机自启在沙盒环境中会跳转到系统的登录项设置；非沙盒版本则直接写入 LaunchAgent。")
+            Text(Localization.string(.launchAgentNotice, for: wc.language))
                 .font(.footnote)
                 .foregroundStyle(.secondary)
         }
